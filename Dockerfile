@@ -33,9 +33,10 @@ HEALTHCHECK CMD curl --fail -k -H "Referer: healthcheck" https://127.0.0.1:8443/
 # ============================================================
 # 端口暴露
 # ============================================================
-
-EXPOSE 8080   # HTTP 端口（内部，重定向到 HTTPS）
-EXPOSE 8443   # HTTPS 端口（实际访问端口）
+# HTTP 端口（内部，重定向到 HTTPS）
+# HTTPS 端口（实际访问端口）
+EXPOSE 8080   
+EXPOSE 8443   
 
 # ============================================================
 # 启动脚本
@@ -51,11 +52,11 @@ CMD /httpd-foreground
 # 环境变量配置
 # ============================================================
 
-ENV PATH=/venv/bin:${PATH} \      # 优先使用虚拟环境中的 Python
-    VIRTUAL_ENV=/venv      \      # Python 虚拟环境位置
-    LC_ALL=en_US.UTF-8     \      # 设置语言为英文 UTF-8
-    LANG=en_US.UTF-8       \      # 同上
-    LANGUAGE=en_US.UTF-8          # 同上
+ENV PATH=/venv/bin:${PATH} \      
+    VIRTUAL_ENV=/venv      \      
+    LC_ALL=en_US.UTF-8     \      
+    LANG=en_US.UTF-8       \      
+    LANGUAGE=en_US.UTF-8          
 
 # ============================================================
 # 复制 Python 虚拟环境
@@ -91,9 +92,9 @@ RUN /usr/bin/sscg -v -f \
     --country BG --locality Sofia \
     --organization "Kiwi TCMS" \
     --organizational-unit "Quality Engineering" \
-    --ca-file       /Kiwi/static/ca.crt     \   # CA 证书输出位置
-    --cert-file     /Kiwi/ssl/localhost.crt \   # SSL 证书输出位置
-    --cert-key-file /Kiwi/ssl/localhost.key     # SSL 私钥输出位置
+    --ca-file       /Kiwi/static/ca.crt     \   
+    --cert-file     /Kiwi/ssl/localhost.crt \   
+    --cert-key-file /Kiwi/ssl/localhost.key  
 
 # ============================================================
 # 配置切换（开发环境 → 生产环境）
