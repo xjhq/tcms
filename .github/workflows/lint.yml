@@ -1,0 +1,138 @@
+name: lint
+
+on:
+  push:
+    branches: master
+  pull_request:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions: read-all
+
+jobs:
+  doc8:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Lint with doc8
+      run: |
+        pip install doc8
+        make doc8
+
+  flake8:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Lint with flake8
+      run: |
+        pip install flake8
+        make flake8
+
+  # this still contains failures
+  pylint:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Lint with pylint
+      run: |
+        pip install -r requirements/devel.txt
+
+        export LANG=en-us
+        make pylint
+
+  similar_strings:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Lint with pylint
+      run: |
+        pip install -r requirements/devel.txt
+
+        export LANG=en-us
+        make similar_strings
+
+  isort:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: isort --check
+      run: |
+        pip install -r requirements/devel.txt
+
+        export LANG=en-us
+        # skip kiwi_lint/__init__.py b/c the import order is used to easily
+        # figure out pylint numerical IDs by looking at the last import !!!
+        isort --check --color --diff --skip kiwi_lint/__init__.py .
+
+  black:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: psf/black@25.12.0
+
+  eslint:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Run eslint
+        run: |
+          cd tcms/
+          ./npm-install && npm install --dev
+
+          ./node_modules/.bin/eslint .

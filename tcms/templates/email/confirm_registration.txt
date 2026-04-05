@@ -1,0 +1,8 @@
+{% load i18n %}{% blocktrans %}Welcome to Kiwi TCMS!
+
+To confirm email address for username `{{ user }}` and activate your account
+please follow this URL:
+{{ confirm_url }}
+
+Regards,
+Kiwi TCMS{% endblocktrans %}

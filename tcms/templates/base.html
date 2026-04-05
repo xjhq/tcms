@@ -1,0 +1,74 @@
+{% load i18n %}
+{% load static %}
+{% load extra_filters %}
+
+{% get_current_language as LANGUAGE_CODE %}
+<!DOCTYPE html>
+<html class="{% block html_class%}{% endblock %}" lang="{{ LANGUAGE_CODE }}"
+    data-trans-day="{% trans 'day' %}" data-trans-days="{% trans 'days' %}"
+    data-trans-hour="{% trans 'hour' %}" data-trans-hours="{% trans 'hours' %}"
+    data-trans-minute="{% trans 'minute' %}" data-trans-minutes="{% trans 'minutes' %}"
+    data-trans-second="{% trans 'second' %}" data-trans-seconds="{% trans 'seconds' %}"
+>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="shortcut icon" href="{% static 'images/favicon.ico' %}" type='image/x-icon'>
+    <title>Kiwi TCMS - {% block title %}{% trans "the leading open source test case management system" %}{% endblock %}</title>
+
+    {% if LANGUAGE_CODE == 'eo' %}
+    <script type="text/javascript" src="{% static 'js/crowdin.js'  %}"></script>
+    <script type="text/javascript" src="//cdn.crowdin.com/jipt/jipt.js"></script>
+    {% endif %}
+
+    {% if SETTINGS.ANONYMOUS_ANALYTICS %}
+    <script defer
+        event-version="{{ SETTINGS.KIWI_VERSION }}"
+        data-domain="{{ SETTINGS.PLAUSIBLE_DOMAIN }}"
+        src="https://plausible.io/js/script.pageview-props.js">
+    </script>
+    {% endif %}
+
+    {% include 'patternfly.html' %}
+    {% block head %}{% endblock %}
+</head>
+<body id="{% block page_id %}{% endblock %}" class="{% block body_class %}{% endblock %}">
+    {% if not REQUEST__NONAV %}
+        {% include 'navbar.html' %}
+    {% endif %}
+
+    {% for message in messages %}
+        <div class="alert alert-{{ message.tags }} alert-dismissable">
+            <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                <span class="pficon pficon-close"></span>
+            </button>
+            <span class="pficon {{ message|message_icon }}"></span>
+            <strong>{{ message|safe }}!</strong>
+        </div>
+    {% endfor %}
+
+    <script src="{% static 'bootstrap-select/dist/js/bootstrap-select.min.js' %}"></script>
+    <script src="{% static 'bootstrap-switch/dist/js/bootstrap-switch.min.js' %}"></script>
+
+    <script src="{% static 'html5sortable/dist/html5sortable.min.js' %}"></script>
+
+    <script src="{% static 'moment/min/moment-with-locales.min.js' %}"></script>
+    <script src="{% static 'moment-timezone/builds/moment-timezone-with-data.min.js' %}"></script>
+    <script src="{% static 'eonasdan-bootstrap-datetimepicker/build/js/bootstrap-datetimepicker.min.js' %}"></script>
+
+    <script src="{% static 'simplemde/dist/simplemde.min.js' %}"></script>
+    <script src="{% static 'typeahead.js/dist/typeahead.jquery.min.js' %}"></script>
+
+    <script src="{% static 'grappelli/jquery/jquery.min.js' %}"></script>
+    <script src="{% static 'grappelli/js/grappelli.min.js' %}"></script>
+    <script src="{% static 'admin/js/admin/RelatedObjectLookups.js' %}"></script>
+
+    <script src="{% static 'js/bundle.js' %}"></script>
+
+    {% block contents %}{% endblock %}
+    {% include 'include/ads.html' %}
+
+    {% if SETTINGS.ANONYMOUS_ANALYTICS %}
+    <img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid={{ SETTINGS.SCARF_PIXEL_ID }}">
+    {% endif %}
+</body>
+</html>

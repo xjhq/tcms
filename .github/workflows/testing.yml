@@ -1,0 +1,368 @@
+name: testing
+
+on:
+  push:
+    branches: master
+  pull_request:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions: read-all
+
+jobs:
+  sqlite:
+    name: sqlite / english
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+        kiwitcms-url: [tcms.kiwitcms.org, public.tenant.kiwitcms.org]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Configure ~/.tcms.conf for ${{ matrix.kiwitcms-url }}
+        run: |
+          echo "[tcms]" > ~/.tcms.conf
+          echo "url = https://${{ matrix.kiwitcms-url }}/xml-rpc/" >> ~/.tcms.conf
+          echo "username = kiwitcms-bot" >> ~/.tcms.conf
+          echo "password = ${{ secrets.TCMS_PASSWORD }}" >> ~/.tcms.conf
+
+      - name: Execute tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install gettext
+
+          sudo mkdir /Kiwi
+          sudo chmod a+w /Kiwi
+
+          pip install -r requirements/devel.txt
+          pushd tcms/ && npm install --dev && ./node_modules/.bin/webpack && popd
+          pushd tcms/ && ./npm-install && popd
+
+          export LANG=en-us
+
+          # report to Kiwi TCMS only if we have access to secrets
+          if [ -n "${{ secrets.TCMS_PASSWORD }}" ]; then
+            pip install kiwitcms-django-plugin
+
+            export DJANGO_TEST_RUNNER="tcms_django_plugin.TestRunner"
+
+            export TCMS_PRODUCT=$GITHUB_REPOSITORY
+
+            # branch name or pull/123
+            export TCMS_PRODUCT_VERSION=$(echo $GITHUB_REF | sed "s|refs/heads/||" | sed "s|refs/||" | sed "s|/merge||")
+
+            # short commit number
+            export TCMS_BUILD=$(echo $GITHUB_SHA | cut -c1-7)
+          fi
+
+          make test
+          coverage report -m
+
+      - name: Send coverage to codecov.io
+        if: env.CODECOV_TOKEN
+        uses: codecov/codecov-action@v6
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          fail_ci_if_error: false
+          verbose: true
+
+  check_for_unapplied_migrations:
+    name: check for unapplied migrations
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install gettext
+          pip install -r requirements/devel.txt
+          pushd tcms/ && npm install --dev && ./node_modules/.bin/webpack && popd
+          pushd tcms/ && ./npm-install && popd
+
+      - name: Run test
+        run: |
+          export LANG=en-us
+          export TEST_DASHBOARD_CHECK_UNAPPLIED_MIGRATIONS=1
+          coverage run --source='.' ./manage.py test -v2 --noinput --settings=tcms.settings.test tcms.core.tests.test_views.TestDashboardCheckMigrations
+          coverage report -m
+
+      - name: Send coverage to codecov.io
+        if: env.CODECOV_TOKEN
+        uses: codecov/codecov-action@v6
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          fail_ci_if_error: false
+          verbose: true
+
+  without_internal_bugtracker:
+    name: without internal bugtracker
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Execute tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install gettext
+
+          sudo mkdir /Kiwi
+          sudo chmod a+w /Kiwi
+
+          pip install -r requirements/devel.txt
+          pushd tcms/ && npm install --dev && ./node_modules/.bin/webpack && popd
+          pushd tcms/ && ./npm-install && popd
+
+          export LANG=en-us
+          export KIWI_DISABLE_BUGTRACKER=yes
+          make test
+          coverage report -m
+
+      - name: Send coverage to codecov.io
+        if: env.CODECOV_TOKEN
+        uses: codecov/codecov-action@v6
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          fail_ci_if_error: false
+          verbose: true
+
+  mariadb:
+    name: mariadb / slovenian
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Create database
+        run: |
+          docker compose pull db
+          docker compose run -d -p 3306:3306 --name kiwi_db db
+          docker images
+          sleep 20  # wait to initialize
+          docker exec -i kiwi_db mariadb -u root -pkiwi-1s-aw3s0m3 -e 'GRANT ALL PRIVILEGES ON test_kiwi.* TO kiwi;'
+
+      - name: Execute tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install gettext
+
+          sudo mkdir /Kiwi
+          sudo chmod a+w /Kiwi
+
+          pip install -r requirements/devel.txt
+          pip install -r requirements/mariadb.txt
+          pushd tcms/ && npm install --dev && ./node_modules/.bin/webpack && popd
+          pushd tcms/ && ./npm-install && popd
+
+          export LANG=sl-si
+          TEST_DB=MariaDB make test
+          coverage report -m
+
+      - name: Send coverage to codecov.io
+        if: env.CODECOV_TOKEN
+        uses: codecov/codecov-action@v6
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          fail_ci_if_error: false
+          verbose: true
+
+  postgres:
+    name: postgres / french
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Create database
+        run: |
+          docker compose -f docker-compose.postgres pull db
+          docker compose -f docker-compose.postgres run -d -p 5432:5432 --name kiwi_db db
+          docker images
+
+      - name: Execute tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install gettext
+
+          sudo mkdir /Kiwi
+          sudo chmod a+w /Kiwi
+
+          pip install -r requirements/devel.txt
+          pip install -r requirements/postgres.txt
+          pushd tcms/ && npm install --dev && ./node_modules/.bin/webpack && popd
+          pushd tcms/ && ./npm-install && popd
+
+          export LANG=fr-fr
+          TEST_DB=Postgres make test
+          coverage report -m
+
+      - name: Send coverage to codecov.io
+        if: env.CODECOV_TOKEN
+        uses: codecov/codecov-action@v6
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: Fetch logs
+        if: always()
+        run: |
+          docker logs kiwi_db >postgres-container.log 2>&1
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-french
+          path: postgres-container.log
+
+  docker:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup
+        run: |
+          sudo apt-get update
+          # remove stock FF package
+          sudo snap remove firefox
+          sudo apt-get remove firefox
+
+          sudo apt-get install git make wrk
+
+          # install beakerlib from source it doesn't ship DEB packages
+          if [ ! -f "/usr/share/beakerlib/beakerlib.sh" ]; then
+              git clone https://github.com/beakerlib/beakerlib.git
+              sudo make -C beakerlib/ install
+          fi
+
+          pip install -r requirements/devel.txt
+
+          # install Firefox and Geckodriver from Mozilla's DEB repository
+          # b/c Ubuntu 22.04 and later ships FF via snap package (a container)
+          # which causes issues with file access from RobotFramework tests
+          sudo apt-get install software-properties-common
+          sudo add-apt-repository --yes ppa:mozillateam/ppa
+
+          # prioritize the 3rd party repository
+          sudo tee /etc/apt/preferences.d/mozilla-firefox << EOF
+          Package: *
+          Pin: release o=LP-PPA-mozillateam
+          Pin-Priority: 1001
+
+          Package: firefox
+          Pin: version 1:1snap1-0ubuntu2
+          Pin-Priority: -1
+          EOF
+          sudo apt-get install firefox firefox-geckodriver
+
+          # Locust + Playwright setup
+          pip uninstall --yes trio
+          playwright install firefox
+
+      - name: Docker version info
+        run: |
+          docker --version
+          docker --help
+
+          docker compose --version
+          docker compose --help
+
+      - name: Execute tests
+        run: |
+          make test-docker-image
+          docker images
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: testing-logs
+          path: |
+            ./*.json
+            ./*.html
+            ./*.log
+            ./wrk-logs-*/
+            ./*docker.log
+            ./*cookies*
+            ./test*.txt

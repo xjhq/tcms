@@ -1,0 +1,65 @@
+name: security
+
+on:
+  push:
+    branches: master
+  pull_request:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions: read-all
+
+jobs:
+  checkov:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check with checkov
+        run: |
+          pip install checkov
+          checkov --quiet --directory .
+
+  bandit:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check with bandit
+        run: |
+          pip install bandit
+          make bandit
+
+  # this is expected to fail but we need to know what issues are there
+  npm_audit:
+    name: npm audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: npm audit
+        run: |
+          pushd tcms/
+          ./npm-install
+          npm audit

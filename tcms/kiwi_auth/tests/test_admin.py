@@ -1,0 +1,813 @@
+# pylint: disable=invalid-name
+import html
+from http import HTTPStatus
+
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.http import HttpResponseForbidden
+from django.test import override_settings
+from django.urls import reverse
+from django.utils.translation import gettext_lazy as _
+from mock import patch
+
+from tcms.kiwi_auth.admin import Group
+from tcms.tests import LoggedInTestCase, user_should_have_perm
+from tcms.tests.factories import GroupFactory, UserFactory
+
+from . import __FOR_TESTING__
+
+
+class TestUserAdmin(LoggedInTestCase):  # pylint: disable=too-many-public-methods
+    @classmethod
+    def setUpTestData(cls):
+        # Note: by default the logged-in user is self.tester
+        # who is not given any permissions
+        super().setUpTestData()
+
+        cls.admin = UserFactory(username="admin")
+        cls.admin.is_superuser = True
+        cls.admin.set_password("admin-password")
+        cls.admin.save()
+
+        cls.admin2 = UserFactory(username="admin2")
+        cls.admin2.is_superuser = True
+        cls.admin2.set_password("admin-password")
+        cls.admin2.save()
+
+        # moderator is a non-superuser who is granted specific permissions
+        cls.moderator = UserFactory(username="moderator")
+        cls.moderator.is_superuser = False
+        cls.moderator.set_password("admin-password")
+        cls.moderator.save()
+
+        cls.inactive1 = UserFactory(username="inactiveOne")
+        cls.inactive1.is_active = True
+        cls.inactive1.is_superuser = False
+        cls.inactive1.save()
+
+        cls.inactive2 = UserFactory(username="inactiveTwo")
+        cls.inactive2.is_active = True
+        cls.inactive2.is_superuser = False
+        cls.inactive2.save()
+
+    def setUp(self):
+        super().setUp()
+        # self.tester doesn't have any permissions
+        self.assertEqual(0, self.tester.user_permissions.count())
+
+    def test_superuser_can_view_list_of_all_users(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+        response = self.client.get("/admin/auth/user/")
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertContains(response, self.admin.username)
+        self.assertContains(response, self.admin2.username)
+        self.assertContains(response, self.tester.username)
+        self.assertContains(response, self.moderator.username)
+
+    def test_superuser_can_view_user_profile(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+
+        response = self.client.get(f"/admin/auth/user/{self.tester.pk}/change/")
+        self.assertContains(response, self.tester.username)
+
+    def test_superuser_can_add_users(self):
+        # test for https://github.com/kiwitcms/Kiwi/issues/642
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+        response = self.client.get("/admin/auth/user/add/")
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+
+        response = self.client.post(
+            "/admin/auth/user/add/",
+            {
+                "username": "added-by-admin",
+                "password1": __FOR_TESTING__,
+                "password2": __FOR_TESTING__,
+            },
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertTrue(
+            get_user_model().objects.filter(username="added-by-admin").exists()
+        )
+
+    def test_superuser_can_change_other_users(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+
+        response = self.client.get(f"/admin/auth/user/{self.tester.pk}/change/")
+        response_str = str(response.content, encoding=settings.DEFAULT_CHARSET)
+
+        # 4 readonly fields
+        self.assertEqual(response_str.count("grp-readonly"), 4)
+        self.assertNotContains(response, "id_email")
+        self.assertContains(
+            response, f'<div class="grp-readonly">{self.tester.email}</div>'
+        )
+
+        # these fields can be edited
+        self.assertContains(response, "id_first_name")
+        self.assertContains(response, "id_last_name")
+        self.assertContains(response, "id_is_active")
+        self.assertContains(response, "id_is_staff")
+        self.assertContains(response, "id_is_superuser")
+        self.assertContains(response, "id_groups")
+        self.assertContains(response, "id_user_permissions")
+
+        response = self.client.post(
+            f"/admin/auth/user/{self.tester.pk}/change/",
+            {
+                "first_name": "Changed by admin",
+                # required fields below
+                "username": self.tester.username,
+                "date_joined_0": "2018-09-03",
+                "date_joined_1": "13:16:25",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+
+        self.tester.refresh_from_db()
+        self.assertEqual(self.tester.first_name, "Changed by admin")
+
+    def test_superuser_can_delete_itself(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+        response = self.client.get(
+            reverse("admin:auth_user_delete", args=[self.admin.pk])
+        )
+        self.assertContains(response, _("Yes, I’m sure"))
+
+        response = self.client.post(
+            reverse("admin:auth_user_delete", args=[self.admin.pk]),
+            {"post": "yes"},
+            follow=True,
+        )
+        self.assertRedirects(response, "/accounts/login/")
+        self.assertFalse(get_user_model().objects.filter(pk=self.admin.pk).exists())
+
+    def test_superuser_can_delete_other_user(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+        response = self.client.get(
+            reverse("admin:auth_user_delete", args=[self.tester.pk])
+        )
+        self.assertContains(response, _("Yes, I’m sure"))
+
+        response = self.client.post(
+            reverse("admin:auth_user_delete", args=[self.tester.pk]),
+            {"post": "yes"},
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertRedirects(response, "/admin/auth/user/")
+        self.assertFalse(get_user_model().objects.filter(pk=self.tester.pk).exists())
+
+    def test_superuser_cannot_delete_the_last_superuser(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+        # Check that we have more than one superuser
+        self.assertGreater(
+            get_user_model().objects.filter(is_superuser=True).count(), 1
+        )
+
+        self.client.get(reverse("admin:auth_user_delete", args=[self.admin2.pk]))
+        self.client.post(
+            reverse("admin:auth_user_delete", args=[self.admin2.pk]),
+            {"post": "yes"},
+            follow=True,
+        )
+        # Check that admin2 is deleted, and we have only one superuser left
+        self.assertFalse(get_user_model().objects.filter(pk=self.admin2.pk).exists())
+        self.assertEqual(get_user_model().objects.filter(is_superuser=True).count(), 1)
+
+        response = self.client.get(
+            reverse("admin:auth_user_delete", args=[self.admin.pk]),
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertRedirects(response, f"/admin/auth/user/{self.admin.pk}/change/")
+
+        response_text = html.unescape(
+            str(response.content, encoding=settings.DEFAULT_CHARSET)
+        )
+        self.assertIn(
+            str(_("This is the last superuser, it cannot be deleted!")), response_text
+        )
+        self.assertTrue(get_user_model().objects.filter(pk=self.admin.pk).exists())
+
+    def test_superuser_can_change_their_password(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+
+        response = self.client.get(f"/admin/auth/user/{self.admin.pk}/password/")
+        # redirects to change password for themselves
+        self.assertRedirects(response, "/admin/password_change/")
+
+    def test_superuser_cant_change_password_for_others(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+
+        response = self.client.get(f"/admin/auth/user/{self.tester.pk}/password/")
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+    def test_superuser_can_view_deactivate_selected_accounts_action(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+        response = self.client.get("/admin/auth/user/")
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertContains(response, _("Deactivate selected accounts"))
+
+    def test_superuser_can_view_deactivate_button(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.admin.username, password="admin-password"
+        )
+        response = self.client.get(
+            reverse("admin:auth_user_change", args=[self.inactive1.pk])
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertContains(response, _("Deactivate"))
+
+    def test_moderator_can_view_list_of_all_users(self):
+        user_should_have_perm(self.moderator, "auth.view_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get("/admin/auth/user/")
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertContains(response, self.admin.username)
+        self.assertContains(response, self.tester.username)
+        self.assertContains(response, self.moderator.username)
+
+    def test_moderator_can_view_user_profile(self):
+        user_should_have_perm(self.moderator, "auth.view_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get(f"/admin/auth/user/{self.tester.pk}/change/")
+        self.assertContains(response, self.tester.username)
+
+        # some fields are read-only
+        response_str = str(response.content, encoding=settings.DEFAULT_CHARSET)
+
+        # 2 hidden fields for csrf - logout_form + user_form
+        self.assertEqual(response_str.count("<input"), 2)
+        self.assertEqual(response_str.count('type="hidden"'), 2)
+        self.assertContains(response, '<input type="hidden" name="csrfmiddlewaretoken"')
+
+        # 9 readonly fields
+        self.assertEqual(response_str.count("grp-readonly"), 9)
+        self.assertNotContains(response, "id_email")
+        self.assertContains(
+            response, f'<div class="grp-readonly">{self.tester.email}</div>'
+        )
+
+        # no delete button
+        self.assertNotContains(response, f"/admin/auth/user/{self.tester.pk}/delete/")
+
+        # no save buttons
+        self.assertNotContains(response, "_save")
+        self.assertNotContains(response, "_addanother")
+        self.assertNotContains(response, "_continue")
+
+    def test_moderator_can_add_users(self):
+        user_should_have_perm(self.moderator, "auth.add_user")
+        user_should_have_perm(self.moderator, "auth.change_user")
+
+        # test for https://github.com/kiwitcms/Kiwi/issues/642
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get("/admin/auth/user/add/")
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+
+        # only these fields can be edited
+        self.assertContains(response, "id_username")
+        self.assertContains(response, "id_password1")
+        self.assertContains(response, "id_password2")
+
+        response = self.client.post(
+            "/admin/auth/user/add/",
+            {
+                "username": "added-by-moderator",
+                "password1": __FOR_TESTING__,
+                "password2": __FOR_TESTING__,
+            },
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertTrue(
+            get_user_model().objects.filter(username="added-by-moderator").exists()
+        )
+
+    def test_moderator_can_change_other_users(self):
+        user_should_have_perm(self.moderator, "auth.view_user")
+        user_should_have_perm(self.moderator, "auth.change_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+
+        response = self.client.get(f"/admin/auth/user/{self.tester.pk}/change/")
+        response_str = str(response.content, encoding=settings.DEFAULT_CHARSET)
+
+        # 3 readonly fields
+        self.assertEqual(response_str.count("grp-readonly"), 3)
+        self.assertNotContains(response, "id_email")
+        self.assertContains(
+            response, f'<div class="grp-readonly">{self.tester.email}</div>'
+        )
+
+        # these fields can be edited
+        self.assertContains(response, "id_first_name")
+        self.assertContains(response, "id_last_name")
+        self.assertContains(response, "id_is_active")
+        self.assertContains(response, "id_is_staff")
+        self.assertContains(response, "id_groups")
+        self.assertContains(response, "id_user_permissions")
+
+        response = self.client.post(
+            f"/admin/auth/user/{self.tester.pk}/change/",
+            {
+                "first_name": "Changed by moderator",
+                # required fields below
+                "username": self.tester.username,
+                "date_joined_0": "2018-09-03",
+                "date_joined_1": "13:16:25",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+
+        self.tester.refresh_from_db()
+        self.assertEqual(self.tester.first_name, "Changed by moderator")
+
+    def test_moderator_can_delete_itself(self):
+        user_should_have_perm(self.moderator, "auth.delete_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get(
+            reverse("admin:auth_user_delete", args=[self.moderator.pk])
+        )
+        self.assertContains(response, _("Yes, I’m sure"))
+
+        response = self.client.post(
+            reverse("admin:auth_user_delete", args=[self.moderator.pk]),
+            {"post": "yes"},
+            follow=True,
+        )
+        self.assertRedirects(response, "/accounts/login/")
+        self.assertFalse(get_user_model().objects.filter(pk=self.moderator.pk).exists())
+
+    def test_moderator_can_delete_other_user(self):
+        user_should_have_perm(self.moderator, "auth.view_user")
+        user_should_have_perm(self.moderator, "auth.delete_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get(
+            reverse("admin:auth_user_delete", args=[self.tester.pk])
+        )
+        self.assertContains(response, _("Yes, I’m sure"))
+
+        response = self.client.post(
+            reverse("admin:auth_user_delete", args=[self.tester.pk]),
+            {"post": "yes"},
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        # b/c our test has only view & delete perms
+        self.assertRedirects(response, "/admin/")
+        self.assertFalse(get_user_model().objects.filter(pk=self.tester.pk).exists())
+
+    def test_moderator_can_change_their_password(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+
+        response = self.client.get(f"/admin/auth/user/{self.moderator.pk}/password/")
+        # redirects to change password for themselves
+        self.assertRedirects(response, "/admin/password_change/")
+
+    def test_moderator_cant_change_password_for_others(self):
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+
+        response = self.client.get(f"/admin/auth/user/{self.tester.pk}/password/")
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+    def test_moderator_cannot_see_deactivate_selected_accounts_action_with_view_only_permissions(
+        self,
+    ):
+        user_should_have_perm(self.moderator, "auth.view_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get("/admin/auth/user/")
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertNotContains(response, _("Deactivate selected accounts"))
+
+    def test_moderator_with_view_permission_cannot_deactivate_selected_accounts_via_action(
+        self,
+    ):
+        for user in [self.inactive1, self.inactive2]:
+            self.assertTrue(user.is_active)
+
+        user_should_have_perm(self.moderator, "auth.view_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+
+        response = self.client.post(
+            "/admin/auth/user/",
+            {
+                "_selected_action": [self.inactive1.pk, self.inactive2.pk],
+                "action": "deactivate_selected",
+                "select_across": 0,
+                "index": 0,
+            },
+            follow=True,
+        )
+
+        for user in [self.inactive1, self.inactive2]:
+            user.refresh_from_db()
+            self.assertNotContains(
+                response, _("Account '%s' was deactivated") % user, html=True
+            )
+            self.assertTrue(user.is_active)
+
+    def test_moderator_cannot_see_deactivate_button_with_view_only_permissions(
+        self,
+    ):
+        user_should_have_perm(self.moderator, "auth.view_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get(
+            reverse("admin:auth_user_change", args=[self.inactive1.pk])
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertNotContains(response, _("Deactivate"))
+
+    def test_moderator_with_view_permission_cannot_deactivate_via_button(
+        self,
+    ):
+        self.assertTrue(self.inactive1.is_active)
+
+        user_should_have_perm(self.moderator, "auth.view_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+
+        response = self.client.post(
+            reverse("admin:auth_user_change", args=[self.inactive1.pk]),
+            {
+                "_deactivate": _("Deactivate"),
+            },
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+        self.inactive1.refresh_from_db()
+        self.assertTrue(self.inactive1.is_active)
+
+    def test_moderator_can_see_deactivate_selected_accounts_action_with_view_plus_change_permissions(
+        self,
+    ):
+        user_should_have_perm(self.moderator, "auth.view_user")
+        user_should_have_perm(self.moderator, "auth.change_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get("/admin/auth/user/")
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertContains(response, _("Deactivate selected accounts"))
+
+    @patch("tcms.signals.USER_DEACTIVATED_SIGNAL.send")
+    def test_moderator_with_change_permission_can_deactivate_selected_accounts_via_action(
+        self,
+        signal_mock,
+    ):
+        for user in [self.inactive1, self.inactive2]:
+            self.assertTrue(user.is_active)
+
+        user_should_have_perm(self.moderator, "auth.view_user")
+        user_should_have_perm(self.moderator, "auth.change_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+
+        response = self.client.post(
+            "/admin/auth/user/",
+            {
+                "_selected_action": [self.inactive1.pk, self.inactive2.pk],
+                "action": "deactivate_selected",
+                "select_across": 0,
+                "index": 0,
+            },
+            follow=True,
+        )
+
+        for user in [self.inactive1, self.inactive2]:
+            user.refresh_from_db()
+            self.assertContains(
+                response, _("Account '%s' was deactivated") % user, html=True
+            )
+            self.assertFalse(user.is_active)
+
+        self.assertTrue(signal_mock.called)
+        self.assertEqual(signal_mock.call_count, 2)
+
+    def test_moderator_can_see_deactivate_button_with_view_plus_change_permissions(
+        self,
+    ):
+        user_should_have_perm(self.moderator, "auth.view_user")
+        user_should_have_perm(self.moderator, "auth.change_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+        response = self.client.get(
+            reverse("admin:auth_user_change", args=[self.inactive1.pk])
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+        self.assertContains(response, _("Deactivate"))
+
+    def test_moderator_with_change_permission_can_deactivate_via_button(
+        self,
+    ):
+        self.assertTrue(self.inactive1.is_active)
+
+        user_should_have_perm(self.moderator, "auth.view_user")
+        user_should_have_perm(self.moderator, "auth.change_user")
+
+        self.client.login(  # nosec:B106:hardcoded_password_funcarg
+            username=self.moderator.username, password="admin-password"
+        )
+
+        response = self.client.post(
+            reverse("admin:auth_user_change", args=[self.inactive1.pk]),
+            {
+                "_deactivate": _("Deactivate"),
+            },
+            follow=True,
+        )
+
+        self.inactive1.refresh_from_db()
+        self.assertContains(
+            response, _("Account '%s' was deactivated") % self.inactive1, html=True
+        )
+        self.assertFalse(self.inactive1.is_active)
+
+    def test_regular_user_cant_view_list_of_all_users(self):
+        response = self.client.get("/admin/auth/user/")
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+    def test_regular_user_cant_view_single_profile_without_permission(self):
+        response = self.client.get(f"/admin/auth/user/{self.admin.pk}/change/")
+        self.assertIsInstance(response, HttpResponseForbidden)
+
+    def test_regular_user_can_view_themselves(self):
+        response = self.client.get(f"/admin/auth/user/{self.tester.pk}/change/")
+        response_str = str(response.content, encoding=settings.DEFAULT_CHARSET)
+
+        # only 1 hidden field for csrf
+        self.assertContains(response, '<input type="hidden" name="csrfmiddlewaretoken"')
+
+        # 7 readonly fields
+        self.assertEqual(response_str.count("grp-readonly"), 7)
+        self.assertNotContains(response, "id_email")
+        self.assertContains(
+            response, f'<div class="grp-readonly">{self.tester.email}</div>'
+        )
+
+        # only these fields can be edited
+        self.assertContains(response, "id_first_name")
+        self.assertContains(response, "id_last_name")
+
+        # Has Delete button
+        self.assertContains(response, f"/admin/auth/user/{self.tester.pk}/delete/")
+
+        # Has Save buttons
+        self.assertContains(response, "_save")
+        self.assertContains(response, "_continue")
+        self.assertNotContains(response, "_addanother")
+
+    def test_regular_user_cant_add_users(self):
+        response = self.client.get("/admin/auth/user/add/")
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+        response = self.client.post(
+            "/admin/auth/user/add/",
+            {
+                "username": "added-by-regular-user",
+                "password1": __FOR_TESTING__,
+                "password2": __FOR_TESTING__,
+            },
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+        self.assertFalse(
+            get_user_model().objects.filter(username="added-by-regular-user").exists()
+        )
+
+    def test_regular_user_cant_change_other_users(self):
+        response = self.client.get(f"/admin/auth/user/{self.admin.pk}/change/")
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+        response = self.client.post(
+            f"/admin/auth/user/{self.admin.pk}/change/",
+            {
+                "first_name": "Changed by regular user",
+                # required fields below
+                "username": self.admin.username,
+                "email": self.admin.email,
+                "date_joined_0": "2018-09-03",
+                "date_joined_1": "13:16:25",
+            },
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+        self.admin.refresh_from_db()
+        self.assertNotEqual(self.admin.first_name, "Changed by regular user")
+
+    def test_regular_user_can_change_themselves(self):
+        response = self.client.post(
+            f"/admin/auth/user/{self.tester.pk}/change/",
+            {
+                "first_name": "Changed by myself",
+                # required fields below
+                "username": self.tester.username,
+                "email": self.tester.email,
+                "date_joined_0": "2018-09-03",
+                "date_joined_1": "13:16:25",
+            },
+            follow=True,
+        )
+        self.assertEqual(HTTPStatus.OK, response.status_code)
+
+        self.tester.refresh_from_db()
+        self.assertEqual(self.tester.first_name, "Changed by myself")
+
+    def test_regular_user_cant_delete_others(self):
+        response = self.client.get(f"/admin/auth/user/{self.admin.pk}/delete/")
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+    def test_regular_user_can_delete_myself(self):
+        response = self.client.get(
+            reverse("admin:auth_user_delete", args=[self.tester.pk])
+        )
+        self.assertContains(response, _("Yes, I’m sure"))
+
+        response = self.client.post(
+            reverse("admin:auth_user_delete", args=[self.tester.pk]),
+            {"post": "yes"},
+            follow=True,
+        )
+        self.assertRedirects(response, "/accounts/login/")
+        self.assertFalse(get_user_model().objects.filter(pk=self.tester.pk).exists())
+
+    def test_regular_user_can_change_their_password(self):
+        response = self.client.get(f"/admin/auth/user/{self.tester.pk}/password/")
+        # redirects to change password for themselves
+        self.assertRedirects(response, "/admin/password_change/")
+
+    def test_regular_user_cant_change_password_for_others(self):
+        response = self.client.get(f"/admin/auth/user/{self.moderator.pk}/password/")
+        self.assertEqual(HTTPStatus.FORBIDDEN, response.status_code)
+
+
+class TestGroupAdmin(LoggedInTestCase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+
+        cls.tester.is_superuser = True
+        cls.tester.save()
+
+        cls.group = GroupFactory(name="NewGroupName")
+        cls.group.save()
+        cls.defaultGroups = Group.objects.filter(name__in=["Administrator", "Tester"])
+
+    def test_should_not_be_allowed_to_change_groups_with_default_names(self):
+        for group in self.defaultGroups:
+            response = self.client.get(
+                reverse("admin:auth_group_change", args=[group.id])
+            )
+            self.assertNotContains(
+                response,
+                f'<input type="text" name="name" value="{group.name}" class="vTextField"'
+                ' maxlength="150" required="" id="id_name">',
+            )
+            self.assertContains(
+                response, f'<div class="grp-readonly">{group.name}</div>'
+            )
+
+    def test_should_not_be_allowed_to_delete_default_groups(self):
+        for group in self.defaultGroups:
+            response = self.client.get(
+                reverse("admin:auth_group_change", args=[group.id])
+            )
+            _expected_url = reverse("admin:auth_group_delete", args=[self.group.id])
+            _delete = _("Delete")
+            self.assertNotContains(
+                response,
+                f'<a href="{_expected_url}" class="grp-button grp-delete-link">{_delete}</a>',
+            )
+
+    def test_should_be_allowed_to_create_new_group(self):
+        response = self.client.get(reverse("admin:auth_group_add"))
+        _add_group = _("Add %s") % _("group")
+        self.assertContains(response, f"<h1>{_add_group}</h1>")
+        self.assertContains(
+            response,
+            '<input type="text" name="name" class="vTextField" '
+            'maxlength="150" required id="id_name">',
+        )
+
+        # check for the user widget
+        self.assertContains(
+            response,
+            '<select name="users" id="id_users" multiple '
+            'class="selectfilter" data-field-name="users" data-is-stacked="0">',
+        )
+        _label = _("Users")
+        self.assertContains(response, f'<label for="id_users">{_label}')
+
+    @override_settings(LANGUAGE_CODE="en")
+    def test_should_be_able_to_delete_a_non_default_group(self):
+        response = self.client.get(
+            reverse("admin:auth_group_delete", args=[self.group.id]), follow=True
+        )
+        self.assertContains(response, "<h2>Are you sure you want to delete")
+
+    def test_should_be_able_to_edit_a_non_default_group(self):
+        response = self.client.get(
+            reverse("admin:auth_group_change", args=[self.group.id])
+        )
+        self.assertContains(
+            response,
+            f'<input type="text" name="name" value="{self.group.name}" class="vTextField"'
+            ' maxlength="150" required id="id_name">',
+        )
+
+    def test_should_be_allowed_to_create_new_group_with_added_user(self):
+        self.assertFalse(self.tester.groups.filter(name=self.group.name).exists())
+
+        group_name = "TestGroupName"
+        response = self.client.post(
+            reverse("admin:auth_group_add"),
+            {"name": group_name, "users": [self.tester.id]},
+            follow=True,
+        )
+
+        group = self.tester.groups.get(name=group_name)
+
+        self.assertIsNotNone(group)
+        self.assertContains(response, group_name)
+        group_url = reverse("admin:auth_group_change", args=[group.pk])
+        self.assertContains(
+            response,
+            f'<a href="{group_url}">{group_name}</a>',
+        )
+
+    def test_should_be_able_to_add_user_while_editing_a_group(self):
+        self.assertFalse(self.tester.groups.filter(name=self.group.name).exists())
+        response = self.client.post(
+            reverse("admin:auth_group_change", args=[self.group.id]),
+            {"name": self.group.name, "users": [self.tester.id], "_continue": True},
+            follow=True,
+        )
+
+        self.assertContains(
+            response,
+            f'<option value="{self.tester.pk}" selected>{self.tester.username}</option>',
+        )
+        self.assertTrue(self.tester.groups.filter(name=self.group.name).exists())
